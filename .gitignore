@@ -1,0 +1,7 @@
+.vendor*/
+.runtime/
+.docx-review/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+demo_output/
