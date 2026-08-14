@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import cv2
@@ -215,4 +216,55 @@ def draw_pointer_to_target(
         5,
         cv2.LINE_AA,
     )
+    return annotated
+
+
+def draw_exploration_paths(
+    image: np.ndarray,
+    routes: Mapping[
+        str,
+        Sequence[Sequence[tuple[float, float]]],
+    ],
+) -> np.ndarray:
+    """Draw mission routes in the corrected 600×1000 screen coordinates."""
+    annotated = image.copy()
+    colors = {
+        "camera": (224, 108, 38),
+        "cursor": (28, 146, 245),
+        "click": (28, 146, 245),
+    }
+    for source, segments in routes.items():
+        color = colors.get(source, (190, 120, 70))
+        for segment in segments:
+            points = np.asarray(segment, dtype=np.float32).reshape(-1, 2)
+            if not len(points):
+                continue
+            rounded = np.round(points).astype(np.int32)
+            if len(rounded) >= 2:
+                cv2.polylines(
+                    annotated,
+                    [rounded.reshape((-1, 1, 2))],
+                    False,
+                    color,
+                    3,
+                    cv2.LINE_AA,
+                )
+            stride = max(1, len(rounded) // 80)
+            for x, y in rounded[::stride]:
+                cv2.circle(
+                    annotated,
+                    (int(x), int(y)),
+                    4,
+                    (255, 255, 255),
+                    -1,
+                    cv2.LINE_AA,
+                )
+                cv2.circle(
+                    annotated,
+                    (int(x), int(y)),
+                    3,
+                    color,
+                    -1,
+                    cv2.LINE_AA,
+                )
     return annotated

@@ -27,10 +27,12 @@ from .grid import (
     target_direction_label,
     vibration_interval_ms,
 )
+from .mission import MissionResult, MissionSession, same_target_identity
 from .ocr import StaticOCR, TesseractOCR
 from .speech import Speaker
 from .tracking import (
     ApproachRateTracker,
+    draw_exploration_paths,
     draw_pointer_to_target,
     draw_source_tracking,
     draw_warped_pointer,
@@ -117,6 +119,9 @@ class PrototypeApp:
         self.photo = None
         self.display_geometry = None
         self._result_selection_guard = False
+        self.mission: MissionSession | None = None
+        self.mission_history: list[MissionResult] = []
+        self.mission_target_visible = False
 
         self.root.title("키오스크 메뉴 길찾기")
         screen_width = self.root.winfo_screenwidth()
@@ -132,6 +137,7 @@ class PrototypeApp:
         self.root.configure(background="#F4F7FB")
         self._build()
         self.root.after(80, self._haptic_tick)
+        self.root.after(100, self._mission_tick)
         self.load_demo()
 
     def _build(self) -> None:
@@ -532,6 +538,7 @@ class PrototypeApp:
             highlightthickness=0,
             width=435,
         )
+        self.controls_canvas = controls_canvas
         controls_scrollbar = ttk.Scrollbar(
             controls_shell,
             orient="vertical",
@@ -542,6 +549,7 @@ class PrototypeApp:
         controls_scrollbar.pack(side="right", fill="y")
         controls_canvas.pack(side="left", fill="both", expand=True)
         controls = ttk.Frame(controls_canvas, style="App.TFrame")
+        self.controls_panel = controls
         controls_window = controls_canvas.create_window(
             (0, 0), window=controls, anchor="nw"
         )
@@ -875,12 +883,153 @@ class PrototypeApp:
             style="Secondary.TButton",
         ).pack(side="right")
 
+        mission_card = tk.Frame(
+            controls,
+            background=colors["surface"],
+            highlightthickness=0,
+            bd=0,
+        )
+        self.mission_card = mission_card
+        mission_card.pack(fill="x", pady=(0, 10))
+        mission_header = ttk.Frame(
+            mission_card, style="Card.TFrame", padding=(14, 12, 14, 7)
+        )
+        mission_header.pack(fill="x")
+        tk.Label(
+            mission_header,
+            text="03",
+            background=colors["accent_soft"],
+            foreground=colors["accent_dark"],
+            font=(font, 8, "bold"),
+            padx=8,
+            pady=3,
+        ).pack(side="left", padx=(0, 9))
+        ttk.Label(
+            mission_header, text="탐색 미션", style="CardTitle.TLabel"
+        ).pack(side="left")
+        self.mission_phase_var = tk.StringVar(value="목표 대기")
+        self.mission_phase_label = tk.Label(
+            mission_header,
+            textvariable=self.mission_phase_var,
+            background="#F1F5F9",
+            foreground=colors["muted"],
+            font=(font, 8, "bold"),
+            padx=9,
+            pady=3,
+        )
+        self.mission_phase_label.pack(side="right")
+
+        mission_content = ttk.Frame(
+            mission_card, style="Card.TFrame", padding=(14, 0, 14, 14)
+        )
+        mission_content.pack(fill="x")
+        self.mission_target_var = tk.StringVar(
+            value="먼저 인식 결과에서 목표 메뉴를 선택하세요."
+        )
+        ttk.Label(
+            mission_content,
+            textvariable=self.mission_target_var,
+            style="CardHint.TLabel",
+            wraplength=395,
+        ).pack(anchor="w", pady=(0, 8))
+
+        mission_dashboard = tk.Frame(
+            mission_content,
+            background="#111C30",
+            padx=14,
+            pady=12,
+        )
+        mission_dashboard.pack(fill="x")
+        mission_time_row = tk.Frame(
+            mission_dashboard, background="#111C30"
+        )
+        mission_time_row.pack(fill="x")
+        mission_time_label = tk.Frame(
+            mission_time_row, background="#111C30"
+        )
+        mission_time_label.pack(side="left")
+        tk.Label(
+            mission_time_label,
+            text="경과 시간",
+            background="#111C30",
+            foreground="#8EB5FF",
+            font=(font, 8, "bold"),
+        ).pack(anchor="w")
+        self.mission_timer_var = tk.StringVar(value="00:00.0")
+        tk.Label(
+            mission_time_label,
+            textvariable=self.mission_timer_var,
+            background="#111C30",
+            foreground="#FFFFFF",
+            font=(font, 22, "bold"),
+        ).pack(anchor="w", pady=(1, 0))
+        self.mission_history_var = tk.StringVar(value="완료 기록 0회")
+        tk.Label(
+            mission_time_row,
+            textvariable=self.mission_history_var,
+            background="#1C3151",
+            foreground="#D5DFEC",
+            font=(font, 8, "bold"),
+            padx=9,
+            pady=5,
+        ).pack(side="right", anchor="n")
+
+        self.mission_metrics_var = tk.StringVar(
+            value="오류 클릭 0  ·  이동 거리 0.0%"
+        )
+        tk.Label(
+            mission_dashboard,
+            textvariable=self.mission_metrics_var,
+            background="#111C30",
+            foreground="#D5DFEC",
+            font=(font, 9, "bold"),
+            anchor="w",
+        ).pack(fill="x", pady=(8, 0))
+        self.mission_result_var = tk.StringVar(
+            value="미션을 시작하면 탐색 경로와 결과가 기록됩니다."
+        )
+        tk.Label(
+            mission_dashboard,
+            textvariable=self.mission_result_var,
+            wraplength=370,
+            background="#111C30",
+            foreground="#9FB0C5",
+            font=(font, 9),
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", pady=(4, 0))
+
+        mission_actions = ttk.Frame(mission_content, style="Card.TFrame")
+        mission_actions.pack(fill="x", pady=(7, 0))
+        self.mission_button = ttk.Button(
+            mission_actions,
+            text="미션 시작",
+            command=self.start_mission,
+            style="Primary.TButton",
+            state="disabled",
+        )
+        self.mission_button.pack(side="left", fill="x", expand=True)
+        self.mission_reset_button = ttk.Button(
+            mission_actions,
+            text="초기화",
+            command=self.reset_mission,
+            style="Secondary.TButton",
+            state="disabled",
+        )
+        self.mission_reset_button.pack(side="left", padx=(7, 0))
+        ttk.Label(
+            mission_content,
+            text="파랑: 카메라 경로  ·  주황: 마우스·클릭 경로",
+            style="CardHint.TLabel",
+        ).pack(anchor="w", pady=(7, 0))
+
         result_card = tk.Frame(
             controls,
             background=colors["surface"],
             highlightthickness=0,
             bd=0,
         )
+        self.result_card = result_card
         result_card.pack(fill="both", expand=True)
         result_header = ttk.Frame(
             result_card, style="Card.TFrame", padding=(14, 12, 14, 7)
@@ -888,7 +1037,7 @@ class PrototypeApp:
         result_header.pack(fill="x")
         tk.Label(
             result_header,
-            text="03",
+            text="04",
             background=colors["accent_soft"],
             foreground=colors["accent_dark"],
             font=(font, 8, "bold"),
@@ -1100,6 +1249,259 @@ class PrototypeApp:
                 text="음성 안내 켜짐" if enabled else "음성 안내 꺼짐"
             )
 
+    @staticmethod
+    def _mission_rect(item) -> tuple[float, float, float, float]:
+        return (
+            float(item.x),
+            float(item.y),
+            float(item.width),
+            float(item.height),
+        )
+
+    def _mission_item_matches(self, item) -> bool:
+        return (
+            self.mission is not None
+            and same_target_identity(
+                self.mission.target_text,
+                self.mission.target_rect,
+                item.text,
+                self._mission_rect(item),
+            )
+        )
+
+    @staticmethod
+    def _format_mission_time(seconds: float) -> str:
+        minutes = int(seconds // 60)
+        remaining = seconds - minutes * 60
+        return f"{minutes:02d}:{remaining:04.1f}"
+
+    def _set_mission_phase(self, text: str, state: str) -> None:
+        colors = self.ui_colors
+        palette = {
+            "idle": ("#F1F5F9", colors["muted"]),
+            "ready": (colors["accent_soft"], colors["accent_dark"]),
+            "running": ("#DBEAFE", colors["accent_dark"]),
+            "success": (colors["success_soft"], colors["success"]),
+        }
+        background, foreground = palette.get(state, palette["idle"])
+        self.mission_phase_var.set(text)
+        self.mission_phase_label.configure(
+            background=background,
+            foreground=foreground,
+        )
+
+    def _mission_distance_percent(self, result: MissionResult) -> float:
+        width, height = self.analyzer.output_size
+        diagonal = max(1.0, (width * width + height * height) ** 0.5)
+        return result.path_length_px / diagonal * 100.0
+
+    def _refresh_mission_numbers(self) -> None:
+        if self.mission is None:
+            self.mission_timer_var.set("00:00.0")
+            self.mission_metrics_var.set("오류 클릭 0  ·  이동 거리 0.0%")
+            return
+        result = self.mission.snapshot(time.monotonic())
+        self.mission_timer_var.set(
+            self._format_mission_time(result.elapsed_seconds)
+        )
+        distance = self._mission_distance_percent(result)
+        metrics = (
+            f"오류 클릭 {result.wrong_clicks}  ·  "
+            f"이동 거리 {distance:.1f}%"
+        )
+        if self.mission.succeeded and result.efficiency is not None:
+            metrics += f"  ·  경로 효율 {result.efficiency:.0%}"
+        self.mission_metrics_var.set(metrics)
+
+    def _mission_tick(self) -> None:
+        if self.closed:
+            return
+        if self.mission is not None:
+            self._refresh_mission_numbers()
+        self.root.after(100, self._mission_tick)
+
+    def _prepare_mission_target(self, item) -> None:
+        same_target = self._mission_item_matches(item)
+        if same_target:
+            self.mission.update_target(self._mission_rect(item))
+            self.mission_target_visible = True
+            self.mission_target_var.set(
+                f"목표: {item.text} · 목표 영역에 도달하면 자동 성공"
+            )
+            return
+        if self.mission is not None:
+            self.mission.cancel()
+            self.mission = None
+        self.mission_target_visible = True
+        self.mission_target_var.set(
+            f"목표: {item.text} · 시작 후 경로와 시간이 기록됩니다."
+        )
+        self.mission_result_var.set(
+            "미션 시작을 누른 뒤 화면 위를 탐색하세요."
+        )
+        self._set_mission_phase("시작 준비", "ready")
+        self.mission_button.configure(text="미션 시작", state="normal")
+        self.mission_reset_button.configure(state="disabled")
+        self._refresh_mission_numbers()
+
+    def start_mission(self) -> None:
+        if self.selected_item is None or self.result is None:
+            self.mission_result_var.set(
+                "먼저 인식 결과에서 목표 메뉴를 선택하세요."
+            )
+            return
+        self.manual_pointer = None
+        self.approach.reset()
+        self.mission = MissionSession(
+            self.selected_item.text,
+            self._mission_rect(self.selected_item),
+            self.analyzer.output_size,
+            started_at=time.monotonic(),
+        )
+        self.mission_target_visible = True
+        self.mission_target_var.set(
+            f"목표: {self.selected_item.text} · 목표 영역에 도달하면 자동 성공"
+        )
+        self.mission_result_var.set(
+            "탐색 중 · 보정 화면의 경로가 실시간으로 기록됩니다."
+        )
+        self._set_mission_phase("진행 중", "running")
+        self.mission_button.configure(text="미션 진행 중", state="disabled")
+        self.mission_reset_button.configure(state="normal")
+        if (
+            self.capture is not None
+            and self.current_frame is not None
+            and self.current_detection is not None
+        ):
+            tracking = track_camera_center(
+                self.current_frame.shape,
+                self.current_detection.corners,
+                self.selected_item,
+                self.analyzer.output_size,
+            )
+            self.mission.observe(
+                tracking.pointer_screen,
+                time.monotonic(),
+                "camera",
+                complete_on_inside=False,
+                force_sample=True,
+            )
+        self._refresh_mission_numbers()
+        self._render_current()
+
+    def reset_mission(self, clear_target: bool = False) -> None:
+        if self.mission is not None:
+            self.mission.cancel()
+        self.mission = None
+        self.mission_target_visible = False
+        self.manual_pointer = None
+        if clear_target or self.selected_item is None:
+            self.mission_target_var.set(
+                "먼저 인식 결과에서 목표 메뉴를 선택하세요."
+            )
+            self.mission_result_var.set(
+                "미션을 시작하면 탐색 경로와 결과가 기록됩니다."
+            )
+            self._set_mission_phase("목표 대기", "idle")
+            self.mission_button.configure(text="미션 시작", state="disabled")
+        else:
+            self.mission_target_visible = True
+            self.mission_target_var.set(
+                f"목표: {self.selected_item.text} · 시작 후 경로와 시간이 기록됩니다."
+            )
+            self.mission_result_var.set(
+                "미션 시작을 누른 뒤 화면 위를 탐색하세요."
+            )
+            self._set_mission_phase("시작 준비", "ready")
+            self.mission_button.configure(text="미션 시작", state="normal")
+        self.mission_reset_button.configure(state="disabled")
+        self._refresh_mission_numbers()
+        if hasattr(self, "canvas") and self.canvas.winfo_exists():
+            self._render_current()
+
+    def _finish_mission(self) -> None:
+        if self.mission is None or not self.mission.succeeded:
+            return
+        result = self.mission.snapshot(time.monotonic())
+        self.mission_history.append(result)
+        self.mission_history_var.set(
+            f"완료 기록 {len(self.mission_history)}회"
+        )
+        source = {
+            "camera": "카메라 중심",
+            "cursor": "마우스 탐색",
+            "click": "화면 클릭",
+        }.get(result.completion_source, "탐색")
+        efficiency = (
+            f" · 경로 효율 {result.efficiency:.0%}"
+            if result.efficiency is not None
+            else ""
+        )
+        self.mission_result_var.set(
+            f"성공 · {source} · {result.elapsed_seconds:.1f}초"
+            f" · 오류 {result.wrong_clicks}회{efficiency}"
+        )
+        self._set_mission_phase("미션 성공", "success")
+        self.mission_button.configure(text="다시 시작", state="normal")
+        self.mission_reset_button.configure(state="normal")
+        self._refresh_mission_numbers()
+
+    def _observe_mission_point(
+        self,
+        point: tuple[float, float],
+        source: str,
+        complete_on_inside: bool = True,
+        force_sample: bool = False,
+    ):
+        if (
+            self.mission is None
+            or not self.mission.running
+            or not self.mission_target_visible
+            or self.selected_item is None
+            or not self._mission_item_matches(self.selected_item)
+        ):
+            return None
+        self.mission.update_target(self._mission_rect(self.selected_item))
+        update = self.mission.observe(
+            point,
+            time.monotonic(),
+            source,
+            complete_on_inside=complete_on_inside,
+            force_sample=force_sample,
+        )
+        if update.completed:
+            self._finish_mission()
+        return update
+
+    def _register_mission_click(self, point: tuple[float, float]) -> None:
+        if (
+            self.mission is None
+            or not self.mission.running
+            or not self.mission_target_visible
+        ):
+            return
+        source = "click" if self.capture is not None else "cursor"
+        update = self.mission.register_click(
+            point,
+            time.monotonic(),
+            source=source,
+        )
+        if update.completed:
+            self._finish_mission()
+        elif update.wrong_click:
+            self.mission_result_var.set(
+                f"목표 밖 클릭 {self.mission.wrong_clicks}회 · 안내를 따라 다시 탐색하세요."
+            )
+            self._refresh_mission_numbers()
+
+    def _draw_mission_paths(self, image):
+        if self.mission is None:
+            return image
+        routes = self.mission.route_segments()
+        if not routes:
+            return image
+        return draw_exploration_paths(image, routes)
+
     def _global_keypress(self, event) -> str | None:
         if self.root.focus_get() is self.target_entry:
             return None
@@ -1253,6 +1655,7 @@ class PrototypeApp:
             )
 
     def load_demo(self) -> None:
+        self.reset_mission(clear_target=True)
         self.stop_camera()
         self._clear_frame_candidates()
         self.input_generation += 1
@@ -1287,6 +1690,7 @@ class PrototypeApp:
         )
         if not path:
             return
+        self.reset_mission(clear_target=True)
         self.stop_camera()
         self._clear_frame_candidates()
         raw = Path(path).read_bytes()
@@ -1325,6 +1729,7 @@ class PrototypeApp:
         if self.capture is not None or self.camera_open_future is not None:
             self.stop_camera(announce=True)
             return
+        self.reset_mission(clear_target=True)
         preferred = self._preferred_camera_index()
         automatic_selection = preferred is None
         self.input_generation += 1
@@ -1481,6 +1886,7 @@ class PrototypeApp:
     def stop_camera(self, announce: bool = False) -> None:
         was_active = self.capture is not None or self.camera_open_future is not None
         was_camo = self.current_camera_is_camo
+        mission_was_running = self.mission is not None and self.mission.running
         self.camera_generation += 1
         if self.capture is not None:
             self.capture.release()
@@ -1512,6 +1918,11 @@ class PrototypeApp:
         elif was_active and hasattr(self, "connection_status_var"):
             self._set_connection_status(
                 self._idle_connection_message(), "idle"
+            )
+        if was_active and mission_was_running and not self.closed:
+            self.reset_mission(clear_target=False)
+            self.mission_result_var.set(
+                "카메라 연결이 종료되어 진행 중 미션을 초기화했습니다. 다시 시작하세요."
             )
 
     def _camera_tick(self, generation: int) -> None:
@@ -1610,6 +2021,8 @@ class PrototypeApp:
                 self.screen_miss_count = 0
         self.current_detection = detection
         if detection is None:
+            if self.mission is not None and self.mission.running:
+                self.mission.break_route("camera")
             message = (
                 "흔들림으로 화면 테두리를 잠시 놓쳤습니다. "
                 f"최근 선명 프레임 {len(self.frame_candidates)}장은 유지합니다."
@@ -1671,6 +2084,21 @@ class PrototypeApp:
                 else current_warp
             )
 
+            tracking = None
+            if self.selected_item is not None and self.result is not None:
+                tracking = track_camera_center(
+                    frame.shape,
+                    detection.corners,
+                    self.selected_item,
+                    self.analyzer.output_size,
+                )
+                self._observe_mission_point(
+                    tracking.pointer_screen,
+                    "camera",
+                    complete_on_inside=True,
+                )
+            corrected = self._draw_mission_paths(corrected)
+
             if self.selected_item is not None and self.result is not None:
                 if self.manual_pointer is not None:
                     _, inside, _ = vibration_interval_ms(
@@ -1688,12 +2116,13 @@ class PrototypeApp:
                     self.tracking_was_inside = inside
                     self._update_manual_pointer_guidance()
                 else:
-                    tracking = track_camera_center(
-                        frame.shape,
-                        detection.corners,
-                        self.selected_item,
-                        self.analyzer.output_size,
-                    )
+                    if tracking is None:
+                        tracking = track_camera_center(
+                            frame.shape,
+                            detection.corners,
+                            self.selected_item,
+                            self.analyzer.output_size,
+                        )
                     rate = self.approach.update(tracking.normalized_distance)
                     annotated = draw_source_tracking(annotated, tracking)
                     corrected = draw_warped_pointer(
@@ -2084,6 +2513,12 @@ class PrototypeApp:
                 self.item_list.focus_set()
         else:
             self.selected_item = None
+            if self.mission is not None and self.mission.running:
+                self.mission_target_visible = False
+                self.mission.break_route()
+                self.mission_result_var.set(
+                    "목표 문자를 다시 인식하는 중 · 타이머와 기존 경로는 유지됩니다."
+                )
             self.manual_pointer = None
             self.location_voice_message = ""
             self._reset_tracking_feedback(keep_target=True)
@@ -2174,6 +2609,11 @@ class PrototypeApp:
 
     def search_target(self, event=None) -> None:
         query = self.target_query_var.get().strip()
+        if self.mission is not None and self.mission.running:
+            self.mission_result_var.set(
+                "진행 중인 미션을 초기화한 뒤 다른 목표를 선택하세요."
+            )
+            return
         if not query:
             self.target_status_var.set("찾을 메뉴명을 먼저 입력하세요.")
             self._speak_throttled("찾을 메뉴명을 먼저 입력하세요.", force=True)
@@ -2211,6 +2651,24 @@ class PrototypeApp:
         index = self._selected_result_index()
         if index is None:
             return
+        candidate = self.result.items[index]
+        if (
+            candidate is self.selected_item
+            and self.pending_candidate_index is None
+        ):
+            return
+        if (
+            self.mission is not None
+            and self.mission.running
+        ):
+            self.mission_result_var.set(
+                "진행 중인 미션을 초기화한 뒤 다른 목표를 선택하세요."
+            )
+            for current_index, item in enumerate(self.result.items):
+                if item is self.selected_item:
+                    self._set_result_selection(current_index)
+                    break
+            return
         self._activate_item(index, speak=True)
 
     def _activate_item(
@@ -2224,6 +2682,7 @@ class PrototypeApp:
         preserved_pointer = self.manual_pointer if preserve_pointer else None
         self._set_result_selection(index)
         self.selected_item = self.result.items[index]
+        self._prepare_mission_target(self.selected_item)
         self.pending_candidate_index = None
         self.manual_pointer = preserved_pointer
         self.target_query_var.set(self.selected_item.text)
@@ -2358,6 +2817,12 @@ class PrototypeApp:
             image = self.current_frame
         if (
             image is not None
+            and self.capture is None
+            and self.view_mode.get() == "corrected"
+        ):
+            image = self._draw_mission_paths(image)
+        if (
+            image is not None
             and self.view_mode.get() == "corrected"
             and self.manual_pointer is not None
             and self.selected_item is not None
@@ -2409,10 +2874,18 @@ class PrototypeApp:
         ):
             return
         x0, y0, shown_w, shown_h, image_w, image_h = self.display_geometry
-        if not (x0 <= event.x <= x0 + shown_w and y0 <= event.y <= y0 + shown_h):
+        if not (
+            x0 <= event.x < x0 + shown_w
+            and y0 <= event.y < y0 + shown_h
+        ):
             return
-        px = (event.x - x0) / shown_w * image_w
-        py = (event.y - y0) / shown_h * image_h
+        px = (event.x - x0) * max(0, image_w - 1) / max(1, shown_w - 1)
+        py = (event.y - y0) * max(0, image_h - 1) / max(1, shown_h - 1)
+        mission_update = self._observe_mission_point(
+            (px, py),
+            "cursor",
+            complete_on_inside=True,
+        )
         interval, inside, normalized = vibration_interval_ms(
             (px, py), self.selected_item, (image_w, image_h)
         )
@@ -2429,6 +2902,8 @@ class PrototypeApp:
             inside=inside,
             detail=detail,
         )
+        if mission_update is not None and mission_update.recorded:
+            self._render_current()
 
     def _update_manual_pointer_guidance(
         self,
@@ -2479,11 +2954,14 @@ class PrototypeApp:
         ):
             return
         x0, y0, shown_w, shown_h, image_w, image_h = self.display_geometry
-        if not (x0 <= event.x <= x0 + shown_w and y0 <= event.y <= y0 + shown_h):
+        if not (
+            x0 <= event.x < x0 + shown_w
+            and y0 <= event.y < y0 + shown_h
+        ):
             return
         image_point = (
-            (event.x - x0) / shown_w * image_w,
-            (event.y - y0) / shown_h * image_h,
+            (event.x - x0) * max(0, image_w - 1) / max(1, shown_w - 1),
+            (event.y - y0) * max(0, image_h - 1) / max(1, shown_h - 1),
         )
         if self.view_mode.get() == "corrected":
             if self.capture is not None and self.current_detection is None:
@@ -2506,6 +2984,7 @@ class PrototypeApp:
                 self.analyzer.output_size,
             )
 
+        self._register_mission_click(pointer)
         self.manual_pointer = pointer
         self._update_manual_pointer_guidance(render=True)
 

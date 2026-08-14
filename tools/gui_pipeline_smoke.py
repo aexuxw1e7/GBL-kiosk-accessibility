@@ -4,6 +4,7 @@ import sys
 import time
 import tkinter as tk
 import traceback
+from copy import copy
 from pathlib import Path
 
 
@@ -114,6 +115,65 @@ def main() -> None:
                 and spoken[-1][1] is True
                 and click_r_result == "break"
             )
+            app.start_mission()
+            mission_started = app.mission is not None and app.mission.running
+            original_item = app.selected_item
+            original_target_rect = app.mission.target_rect
+            duplicate = copy(original_item)
+            duplicate_index = len(app.result.items)
+            app.result.items.append(duplicate)
+            app.item_list.insert(
+                "",
+                "end",
+                iid=str(duplicate_index),
+                values=(duplicate.text, "중복 메뉴", "테스트"),
+            )
+            app._set_result_selection(duplicate_index)
+            root.update_idletasks()
+            app.select_item()
+            duplicate_blocked = (
+                app.selected_item is original_item
+                and app.mission is not None
+                and app.mission.target_rect == original_target_rect
+            )
+            app._register_mission_click((0.0, 0.0))
+            app._observe_mission_point(
+                app.selected_item.center,
+                "cursor",
+                complete_on_inside=True,
+                force_sample=True,
+            )
+            mission_result = (
+                app.mission.snapshot(time.monotonic())
+                if app.mission is not None
+                else None
+            )
+            mission_ok = (
+                mission_started
+                and app.mission is not None
+                and app.mission.succeeded
+                and mission_result is not None
+                and mission_result.wrong_clicks == 1
+                and len(mission_result.route_segments) == 1
+                and len(app.mission_history) == 1
+                and app.mission_phase_var.get() == "미션 성공"
+            )
+            app.start_mission()
+
+            class ReleasableCapture:
+                released = False
+
+                def release(self):
+                    self.released = True
+
+            fake_capture = ReleasableCapture()
+            app.capture = fake_capture
+            app.stop_camera()
+            camera_stop_reset = (
+                fake_capture.released
+                and app.mission is None
+                and "미션을 초기화" in app.mission_result_var.get()
+            )
             state["ok"] = (
                 selected_ok
                 and coordinate_once
@@ -122,11 +182,16 @@ def main() -> None:
                 and click_silent
                 and pointer_preserved
                 and click_r_once
+                and mission_ok
+                and duplicate_blocked
+                and camera_stop_reset
             )
             state["message"] = (
                 f"{len(app.result.items)} items / target={target!r} / "
                 f"selected={getattr(app.selected_item, 'text', None)!r} / "
-                f"spoken={spoken!r} / click={app.location_voice_message!r}"
+                f"spoken={spoken!r} / click={app.location_voice_message!r} / "
+                f"duplicate_blocked={duplicate_blocked!r} / "
+                f"camera_stop_reset={camera_stop_reset!r}"
             )
             state["settle_until"] = time.time() + 2
             root.after(100, check)

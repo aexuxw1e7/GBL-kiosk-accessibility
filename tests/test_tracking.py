@@ -6,6 +6,7 @@ import numpy as np
 from kiosk_accessibility.models import OCRItem
 from kiosk_accessibility.tracking import (
     ApproachRateTracker,
+    draw_exploration_paths,
     frame_point_to_screen,
     track_camera_center,
 )
@@ -46,6 +47,18 @@ class TrackingTests(unittest.TestCase):
         tracker.update(0.5, timestamp=1.0)
         rate = tracker.update(0.3, timestamp=2.0)
         self.assertAlmostEqual(rate, 0.2)
+
+    def test_exploration_path_is_drawn_without_mutating_input(self):
+        image = np.zeros((1000, 600, 3), dtype=np.uint8)
+        annotated = draw_exploration_paths(
+            image,
+            {
+                "camera": (((10, 10), (100, 100)),),
+                "cursor": (((500, 900),),),
+            },
+        )
+        self.assertEqual(int(image.sum()), 0)
+        self.assertGreater(int(annotated.sum()), 0)
 
     def test_source_contains_no_arrow_overlay(self):
         source_root = (
