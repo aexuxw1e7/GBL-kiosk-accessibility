@@ -6,7 +6,7 @@ from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from statistics import median
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 import cv2
 from PIL import Image, ImageTk
@@ -111,91 +111,492 @@ class PrototypeApp:
         self.haptic_active = False
         self.haptic_inside = False
         self.haptic_interval = 1000
-        self.haptic_detail = "목표를 선택하면 진동이 시작됩니다."
+        self.haptic_detail = "목표를 선택하면 가상 진동 안내가 시작됩니다."
         self.last_spoken = ""
         self.last_spoken_at = 0.0
         self.photo = None
         self.display_geometry = None
+        self._result_selection_guard = False
 
-        self.root.title("촉각 격자 키오스크 접근성 프로토타입")
-        self.root.geometry("1320x900")
-        self.root.minsize(1100, 760)
+        self.root.title("키오스크 메뉴 길찾기")
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        window_width = max(1120, min(1440, screen_width - 80))
+        window_height = max(720, min(920, screen_height - 100))
+        left = max(0, (screen_width - window_width) // 2)
+        top = max(0, (screen_height - window_height) // 2)
+        self.root.geometry(
+            f"{window_width}x{window_height}+{left}+{top}"
+        )
+        self.root.minsize(min(1120, window_width), min(720, window_height))
+        self.root.configure(background="#F4F7FB")
         self._build()
         self.root.after(80, self._haptic_tick)
         self.load_demo()
 
     def _build(self) -> None:
-        style = ttk.Style()
-        style.configure("Title.TLabel", font=("맑은 고딕", 18, "bold"))
-        style.configure("Status.TLabel", font=("맑은 고딕", 12, "bold"))
-        style.configure("TButton", font=("맑은 고딕", 10), padding=7)
-
-        header = ttk.Frame(self.root, padding=(18, 14, 18, 10))
-        header.pack(fill="x")
-        ttk.Label(
-            header,
-            text="실시간 화면 인식 · OCR · 6×10 촉각 격자",
-            style="Title.TLabel",
-        ).pack(side="left")
-        self.engine_label = ttk.Label(header, text=self.ocr.name)
-        self.engine_label.pack(side="right")
-
-        body = ttk.Panedwindow(self.root, orient="horizontal")
-        body.pack(fill="both", expand=True, padx=16, pady=(0, 16))
-
-        viewer = ttk.Frame(body)
-        controls = ttk.Frame(body, padding=(16, 4))
-        body.add(viewer, weight=3)
-        body.add(controls, weight=1)
-
-        self.canvas = tk.Canvas(
-            viewer, background="#17202A", highlightthickness=0, cursor="crosshair"
+        colors = {
+            "background": "#F4F7FB",
+            "surface": "#FFFFFF",
+            "surface_soft": "#F7F9FC",
+            "border": "#D9E1EC",
+            "text": "#172033",
+            "muted": "#5D6B7D",
+            "navy": "#10233F",
+            "navy_soft": "#183456",
+            "accent": "#2457D6",
+            "accent_dark": "#1946B7",
+            "accent_soft": "#EAF0FF",
+            "success": "#087A55",
+            "success_soft": "#E8F7F1",
+            "warning": "#9A5A08",
+            "warning_soft": "#FFF3D6",
+            "danger": "#B42318",
+            "canvas": "#0E1726",
+        }
+        self.ui_colors = colors
+        available_fonts = set(tkfont.families(self.root))
+        font = next(
+            (
+                family
+                for family in (
+                    "Pretendard",
+                    "SUIT",
+                    "Noto Sans KR",
+                    "맑은 고딕",
+                )
+                if family in available_fonts
+            ),
+            "맑은 고딕",
         )
-        self.canvas.pack(fill="both", expand=True)
+        self.root.option_add("*Font", (font, 10))
+        self.root.option_add("*TCombobox*Listbox.font", (font, 10))
+
+        style = ttk.Style(self.root)
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+        style.configure(".", font=(font, 10))
+        style.configure("App.TFrame", background=colors["background"])
+        style.configure("Card.TFrame", background=colors["surface"])
+        style.configure("Soft.TFrame", background=colors["surface_soft"])
+        style.configure(
+            "Card.TLabel",
+            background=colors["surface"],
+            foreground=colors["text"],
+        )
+        style.configure(
+            "CardTitle.TLabel",
+            background=colors["surface"],
+            foreground=colors["text"],
+            font=(font, 12, "bold"),
+        )
+        style.configure(
+            "CardHint.TLabel",
+            background=colors["surface"],
+            foreground=colors["muted"],
+            font=(font, 9),
+        )
+        style.configure(
+            "Soft.TLabel",
+            background=colors["surface_soft"],
+            foreground=colors["muted"],
+        )
+        style.configure(
+            "Primary.TButton",
+            background=colors["accent"],
+            foreground="#FFFFFF",
+            borderwidth=0,
+            focusthickness=2,
+            focuscolor=colors["accent_dark"],
+            padding=(13, 11),
+            font=(font, 10, "bold"),
+        )
+        style.map(
+            "Primary.TButton",
+            background=[
+                ("pressed", colors["accent_dark"]),
+                ("active", "#2F67EA"),
+                ("disabled", "#A9B7D2"),
+            ],
+            foreground=[("disabled", "#F5F7FA")],
+        )
+        style.configure(
+            "Secondary.TButton",
+            background="#F1F5F9",
+            foreground=colors["text"],
+            borderwidth=0,
+            bordercolor="#F1F5F9",
+            lightcolor="#F1F5F9",
+            darkcolor="#F1F5F9",
+            padding=(11, 10),
+            font=(font, 10, "bold"),
+        )
+        style.map(
+            "Secondary.TButton",
+            background=[("pressed", "#DDE5EF"), ("active", "#E7EDF4")],
+        )
+        style.configure(
+            "Tertiary.TButton",
+            background=colors["surface"],
+            foreground=colors["accent_dark"],
+            borderwidth=0,
+            padding=(8, 6),
+            font=(font, 9, "bold"),
+        )
+        style.map(
+            "Tertiary.TButton",
+            background=[("pressed", colors["accent_soft"]), ("active", colors["accent_soft"])],
+        )
+        style.configure(
+            "Search.TEntry",
+            fieldbackground="#FFFFFF",
+            foreground=colors["text"],
+            bordercolor="#B8C5D8",
+            lightcolor="#B8C5D8",
+            darkcolor="#B8C5D8",
+            padding=9,
+            font=(font, 11),
+        )
+        style.configure(
+            "Camera.TCombobox",
+            fieldbackground="#FFFFFF",
+            background="#FFFFFF",
+            foreground=colors["text"],
+            bordercolor="#B8C5D8",
+            lightcolor="#B8C5D8",
+            darkcolor="#B8C5D8",
+            arrowcolor=colors["muted"],
+            padding=8,
+        )
+        style.map(
+            "Camera.TCombobox",
+            fieldbackground=[("readonly", "#FFFFFF"), ("disabled", "#EEF2F7")],
+            foreground=[("disabled", "#94A3B8")],
+        )
+        style.configure(
+            "Card.TCheckbutton",
+            background=colors["surface"],
+            foreground=colors["text"],
+            font=(font, 9),
+        )
+        style.map(
+            "Card.TCheckbutton",
+            background=[("active", colors["surface"])],
+        )
+        style.configure(
+            "Analysis.Horizontal.TProgressbar",
+            troughcolor="#E7EDF5",
+            background=colors["accent"],
+            lightcolor=colors["accent"],
+            darkcolor=colors["accent"],
+            bordercolor="#E7EDF5",
+            thickness=4,
+        )
+        style.configure(
+            "Result.Treeview",
+            background="#FFFFFF",
+            fieldbackground="#FFFFFF",
+            foreground=colors["text"],
+            borderwidth=0,
+            relief="flat",
+            rowheight=42,
+            font=(font, 10),
+        )
+        style.map(
+            "Result.Treeview",
+            background=[("selected", colors["accent_soft"])],
+            foreground=[("selected", colors["accent_dark"])],
+        )
+        style.configure(
+            "Result.Treeview.Heading",
+            background="#F8FAFC",
+            foreground=colors["muted"],
+            borderwidth=0,
+            relief="flat",
+            padding=(8, 8),
+            font=(font, 9, "bold"),
+        )
+        style.map(
+            "Result.Treeview.Heading",
+            background=[("active", "#F1F5F9")],
+        )
+        style.configure(
+            "Modern.Vertical.TScrollbar",
+            background="#CBD5E1",
+            troughcolor="#F8FAFC",
+            bordercolor="#F8FAFC",
+            lightcolor="#CBD5E1",
+            darkcolor="#CBD5E1",
+            arrowcolor="#64748B",
+            width=10,
+        )
+
+        header = tk.Frame(
+            self.root,
+            background=colors["navy"],
+            padx=24,
+            pady=14,
+        )
+        header.pack(fill="x")
+        title_block = tk.Frame(header, background=colors["navy"])
+        title_block.pack(side="left", fill="x", expand=True)
+        tk.Label(
+            title_block,
+            text="ACCESSIBLE KIOSK GUIDE",
+            background=colors["navy"],
+            foreground="#8EB5FF",
+            font=(font, 9, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            title_block,
+            text="키오스크 메뉴 길찾기",
+            background=colors["navy"],
+            foreground="#FFFFFF",
+            font=(font, 21, "bold"),
+        ).pack(anchor="w", pady=(1, 0))
+        tk.Label(
+            title_block,
+            text="카메라 화면을 인식해 원하는 메뉴의 위치를 음성으로 안내합니다.",
+            background=colors["navy"],
+            foreground="#C7D4E7",
+            font=(font, 9),
+        ).pack(anchor="w", pady=(2, 0))
+
+        engine_badge = tk.Frame(
+            header,
+            background=colors["navy_soft"],
+            padx=13,
+            pady=8,
+        )
+        engine_badge.pack(side="right", padx=(16, 0))
+        tk.Label(
+            engine_badge,
+            text="OCR ENGINE",
+            background=colors["navy_soft"],
+            foreground="#8EB5FF",
+            font=(font, 8, "bold"),
+        ).pack(anchor="e")
+        self.engine_label = tk.Label(
+            engine_badge,
+            text=self.ocr.name,
+            background=colors["navy_soft"],
+            foreground="#FFFFFF",
+            font=(font, 9, "bold"),
+        )
+        self.engine_label.pack(anchor="e", pady=(1, 0))
+
+        body = ttk.Frame(self.root, style="App.TFrame")
+        body.pack(fill="both", expand=True, padx=18, pady=(16, 10))
+
+        viewer = ttk.Frame(body, style="App.TFrame", padding=(0, 0, 7, 0))
+        controls_shell = ttk.Frame(
+            body,
+            style="App.TFrame",
+            padding=(7, 0, 0, 0),
+            width=450,
+        )
+        controls_shell.pack(side="right", fill="y")
+        controls_shell.pack_propagate(False)
+        viewer.pack(side="left", fill="both", expand=True)
+
+        viewer_card = tk.Frame(
+            viewer,
+            background=colors["surface"],
+            highlightbackground=colors["border"],
+            highlightthickness=1,
+            bd=0,
+        )
+        viewer_card.pack(fill="both", expand=True)
+        viewer_toolbar = tk.Frame(
+            viewer_card, background=colors["surface"], padx=15, pady=11
+        )
+        viewer_toolbar.pack(fill="x")
+        viewer_title = tk.Frame(viewer_toolbar, background=colors["surface"])
+        viewer_title.pack(side="left")
+        tk.Label(
+            viewer_title,
+            text="실시간 화면",
+            background=colors["surface"],
+            foreground=colors["text"],
+            font=(font, 12, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            viewer_title,
+            text="메뉴 선택 후 화면을 클릭하면 해당 위치를 기준으로 다시 계산합니다.",
+            background=colors["surface"],
+            foreground=colors["muted"],
+            font=(font, 8),
+        ).pack(anchor="w", pady=(1, 0))
+
+        self.view_mode = tk.StringVar(value="corrected")
+        mode_group = tk.Frame(
+            viewer_toolbar,
+            background="#EEF2F7",
+            padx=3,
+            pady=3,
+        )
+        mode_group.pack(side="right")
+        for label, value in (
+            ("카메라 원본", "source"),
+            ("보정된 화면", "corrected"),
+        ):
+            tk.Radiobutton(
+                mode_group,
+                text=label,
+                variable=self.view_mode,
+                value=value,
+                command=self._render_current,
+                indicatoron=False,
+                borderwidth=0,
+                relief="flat",
+                background="#EEF2F7",
+                activebackground="#E2E8F0",
+                selectcolor="#FFFFFF",
+                foreground=colors["text"],
+                activeforeground=colors["accent_dark"],
+                font=(font, 9, "bold"),
+                padx=12,
+                pady=7,
+                cursor="hand2",
+            ).pack(side="left")
+
+        self.haptic_var = tk.StringVar(
+            value="목표를 선택하면 가상 진동 안내가 시작됩니다."
+        )
+        self.canvas = tk.Canvas(
+            viewer_card,
+            background=colors["canvas"],
+            highlightthickness=0,
+            cursor="crosshair",
+        )
+        self.canvas.pack(fill="both", expand=True, padx=12)
         self.canvas.bind("<Configure>", lambda event: self._render_current())
         self.canvas.bind("<Motion>", self._pointer_motion)
         self.canvas.bind("<Button-1>", self._canvas_click)
-        self.canvas.bind("<Leave>", lambda event: self.haptic_var.set("포인터를 보정 화면 위로 이동하세요."))
+        self.canvas.bind(
+            "<Leave>",
+            lambda event: self.haptic_var.set(
+                "포인터를 보정된 화면 위로 이동하세요."
+            ),
+        )
 
-        source_bar = ttk.Frame(viewer, padding=(0, 8, 0, 0))
-        source_bar.pack(fill="x")
-        self.view_mode = tk.StringVar(value="corrected")
-        ttk.Radiobutton(
-            source_bar,
-            text="원본·검출",
-            variable=self.view_mode,
-            value="source",
-            command=self._render_current,
+        viewer_status = tk.Frame(
+            viewer_card,
+            background=colors["surface_soft"],
+            padx=14,
+            pady=9,
+        )
+        viewer_status.pack(fill="x", padx=12, pady=(0, 12))
+        tk.Label(
+            viewer_status,
+            textvariable=self.haptic_var,
+            background=colors["surface_soft"],
+            foreground=colors["muted"],
+            font=(font, 9, "bold"),
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+        legend = tk.Frame(viewer_status, background=colors["surface_soft"])
+        legend.pack(side="right", padx=(12, 0))
+        tk.Label(
+            legend,
+            text="●",
+            background=colors["surface_soft"],
+            foreground=colors["success"],
+            font=(font, 8, "bold"),
         ).pack(side="left")
-        ttk.Radiobutton(
-            source_bar,
-            text="원근 보정·격자",
-            variable=self.view_mode,
-            value="corrected",
-            command=self._render_current,
-        ).pack(side="left", padx=(12, 0))
-        self.haptic_var = tk.StringVar(value="메뉴를 선택하면 진동 주기를 시뮬레이션합니다.")
-        ttk.Label(source_bar, textvariable=self.haptic_var).pack(side="right")
+        tk.Label(
+            legend,
+            text="신뢰 높음",
+            background=colors["surface_soft"],
+            foreground=colors["muted"],
+            font=(font, 8),
+        ).pack(side="left", padx=(2, 8))
+        tk.Label(
+            legend,
+            text="●",
+            background=colors["surface_soft"],
+            foreground=colors["warning"],
+            font=(font, 8, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            legend,
+            text="확인 필요",
+            background=colors["surface_soft"],
+            foreground=colors["muted"],
+            font=(font, 8),
+        ).pack(side="left", padx=(2, 0))
 
-        ttk.Label(controls, text="1. 화면 입력", style="Status.TLabel").pack(
-            anchor="w", pady=(0, 6)
+        controls_canvas = tk.Canvas(
+            controls_shell,
+            background=colors["background"],
+            highlightthickness=0,
+            width=435,
         )
-        input_buttons = ttk.Frame(controls)
-        input_buttons.pack(fill="x")
-        ttk.Button(input_buttons, text="내장 데모", command=self.load_demo).pack(
-            side="left", expand=True, fill="x"
+        controls_scrollbar = ttk.Scrollbar(
+            controls_shell,
+            orient="vertical",
+            command=controls_canvas.yview,
+            style="Modern.Vertical.TScrollbar",
         )
-        ttk.Button(input_buttons, text="사진 열기", command=self.open_image).pack(
-            side="left", expand=True, fill="x", padx=5
+        controls_canvas.configure(yscrollcommand=controls_scrollbar.set)
+        controls_scrollbar.pack(side="right", fill="y")
+        controls_canvas.pack(side="left", fill="both", expand=True)
+        controls = ttk.Frame(controls_canvas, style="App.TFrame")
+        controls_window = controls_canvas.create_window(
+            (0, 0), window=controls, anchor="nw"
         )
-        self.camera_button = ttk.Button(
-            input_buttons, text="웹캠 시작", command=self.toggle_camera
+        controls.bind(
+            "<Configure>",
+            lambda event: controls_canvas.configure(
+                scrollregion=controls_canvas.bbox("all")
+            ),
         )
-        self.camera_button.pack(side="left", expand=True, fill="x")
+        controls_canvas.bind(
+            "<Configure>",
+            lambda event: controls_canvas.itemconfigure(
+                controls_window, width=event.width
+            ),
+        )
 
-        camera_options = ttk.Frame(controls)
-        camera_options.pack(fill="x", pady=(7, 0))
-        ttk.Label(camera_options, text="카메라:").pack(side="left")
+        source_card = tk.Frame(
+            controls,
+            background=colors["surface"],
+            highlightthickness=0,
+            bd=0,
+        )
+        source_card.pack(fill="x", pady=(0, 10))
+        source_header = ttk.Frame(
+            source_card, style="Card.TFrame", padding=(14, 12, 14, 7)
+        )
+        source_header.pack(fill="x")
+        tk.Label(
+            source_header,
+            text="01",
+            background=colors["accent_soft"],
+            foreground=colors["accent_dark"],
+            font=(font, 8, "bold"),
+            padx=8,
+            pady=3,
+        ).pack(side="left", padx=(0, 9))
+        ttk.Label(
+            source_header, text="화면 연결", style="CardTitle.TLabel"
+        ).pack(side="left")
+        source_content = ttk.Frame(
+            source_card, style="Card.TFrame", padding=(14, 0, 14, 14)
+        )
+        source_content.pack(fill="x")
+        ttk.Label(
+            source_content,
+            text="iPhone Camo, 웹캠, 사진 또는 데모 화면을 불러옵니다.",
+            style="CardHint.TLabel",
+            wraplength=395,
+        ).pack(anchor="w", pady=(0, 8))
+
+        camera_options = ttk.Frame(source_content, style="Card.TFrame")
+        camera_options.pack(fill="x", pady=(0, 8))
+        ttk.Label(
+            camera_options, text="사용할 카메라", style="Card.TLabel"
+        ).pack(anchor="w", pady=(0, 5))
         self.auto_camera_label = "자동 탐색 (Camo/iPhone 우선)"
         self.camera_source_indices: dict[str, int | None] = {
             self.auto_camera_label: None
@@ -214,28 +615,63 @@ class PrototypeApp:
             textvariable=self.camera_source_var,
             values=list(self.camera_source_indices),
             state="readonly",
-            width=25,
+            width=24,
+            style="Camera.TCombobox",
         )
-        self.camera_selector.pack(side="left", padx=(6, 0), fill="x", expand=True)
+        self.camera_selector.pack(fill="x")
 
-        analysis_buttons = ttk.Frame(controls)
-        analysis_buttons.pack(fill="x", pady=(8, 10))
+        input_buttons = ttk.Frame(source_content, style="Card.TFrame")
+        input_buttons.pack(fill="x", pady=(1, 0))
+        self.camera_button = ttk.Button(
+            input_buttons,
+            text="카메라 연결",
+            command=self.toggle_camera,
+            style="Primary.TButton",
+        )
+        self.camera_button.pack(fill="x")
+
+        alternate_inputs = ttk.Frame(source_content, style="Card.TFrame")
+        alternate_inputs.pack(fill="x", pady=(6, 0))
+        ttk.Button(
+            alternate_inputs,
+            text="사진 불러오기",
+            command=self.open_image,
+            style="Secondary.TButton",
+        ).pack(side="left", expand=True, fill="x")
+        ttk.Button(
+            alternate_inputs,
+            text="데모 실행",
+            command=self.load_demo,
+            style="Secondary.TButton",
+        ).pack(side="left", expand=True, fill="x", padx=(6, 0))
+
+        analysis_buttons = ttk.Frame(source_content, style="Card.TFrame")
+        analysis_buttons.pack(fill="x", pady=(12, 0))
+        ttk.Separator(analysis_buttons, orient="horizontal").pack(
+            fill="x", pady=(0, 10)
+        )
         self.analyze_button = ttk.Button(
             analysis_buttons,
-            text="화면 인식·다시 OCR (F5)",
+            text="화면 분석하기 (F5)",
             command=self.analyze_current,
+            style="Primary.TButton",
         )
-        self.analyze_button.pack(side="left", fill="x", expand=True)
+        self.analyze_button.pack(fill="x")
         self.full_frame_button = ttk.Button(
             analysis_buttons,
-            text="전체 프레임 OCR",
+            text="전체 화면으로 다시 분석",
             command=lambda: self.analyze_current(force_full_frame=True),
+            style="Tertiary.TButton",
         )
-        self.full_frame_button.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        self.full_frame_button.pack(anchor="e", pady=(3, 0))
 
-        ttk.Label(
-            controls, text="2. 카메라·화면 연결", style="Status.TLabel"
-        ).pack(anchor="w")
+        status_box = tk.Frame(
+            source_content,
+            background=colors["surface_soft"],
+            padx=12,
+            pady=10,
+        )
+        status_box.pack(fill="x", pady=(8, 0))
         camo_available = any(device.is_camo for device in self.camera_devices)
         initial_connection = (
             "● Camo/iPhone 감지됨 · 연결 대기"
@@ -243,121 +679,377 @@ class PrototypeApp:
             else "● 카메라 연결 대기"
         )
         self.connection_status_var = tk.StringVar(value=initial_connection)
-        self.connection_status_label = ttk.Label(
-            controls,
+        self.connection_status_label = tk.Label(
+            status_box,
             textvariable=self.connection_status_var,
-            wraplength=330,
+            wraplength=370,
             foreground="#6B7280",
+            background=colors["surface_soft"],
+            justify="left",
+            anchor="w",
+            font=(font, 10, "bold"),
         )
-        self.connection_status_label.pack(
-            anchor="w", fill="x", pady=(3, 2)
-        )
+        self.connection_status_label.pack(anchor="w", fill="x")
         self.camera_status_var = tk.StringVar(value="카메라 미사용")
-        ttk.Label(
-            controls,
+        tk.Label(
+            status_box,
             textvariable=self.camera_status_var,
-            wraplength=330,
-            foreground="#31566F",
-        ).pack(anchor="w", fill="x", pady=(0, 7))
+            wraplength=370,
+            foreground="#436078",
+            background=colors["surface_soft"],
+            justify="left",
+            anchor="w",
+            font=(font, 9),
+        ).pack(anchor="w", fill="x", pady=(3, 0))
 
         self.status_var = tk.StringVar(value="OCR 분석 대기")
-        ttk.Label(
-            controls,
+        tk.Label(
+            status_box,
             textvariable=self.status_var,
-            wraplength=330,
-            foreground="#0A6F57",
-        ).pack(anchor="w", fill="x", pady=(0, 9))
+            wraplength=370,
+            foreground=colors["success"],
+            background=colors["surface_soft"],
+            justify="left",
+            anchor="w",
+            font=(font, 9),
+        ).pack(anchor="w", fill="x", pady=(2, 0))
+        self.analysis_progress = ttk.Progressbar(
+            source_content,
+            mode="determinate",
+            value=0,
+            style="Analysis.Horizontal.TProgressbar",
+        )
+        self.analysis_progress.pack(fill="x", pady=(7, 0))
 
-        ttk.Label(controls, text="3. 찾을 메뉴 입력", style="Status.TLabel").pack(
-            anchor="w"
+        target_card = tk.Frame(
+            controls,
+            background=colors["surface"],
+            highlightthickness=0,
+            bd=0,
         )
-        target_input = ttk.Frame(controls)
-        target_input.pack(fill="x", pady=(5, 5))
+        target_card.pack(fill="x", pady=(0, 10))
+        target_header = ttk.Frame(
+            target_card, style="Card.TFrame", padding=(14, 12, 14, 7)
+        )
+        target_header.pack(fill="x")
+        tk.Label(
+            target_header,
+            text="02",
+            background=colors["accent_soft"],
+            foreground=colors["accent_dark"],
+            font=(font, 8, "bold"),
+            padx=8,
+            pady=3,
+        ).pack(side="left", padx=(0, 9))
+        ttk.Label(
+            target_header, text="메뉴 찾기", style="CardTitle.TLabel"
+        ).pack(side="left")
+        target_content = ttk.Frame(
+            target_card, style="Card.TFrame", padding=(14, 0, 14, 14)
+        )
+        target_content.pack(fill="x")
+        ttk.Label(
+            target_content,
+            text="찾을 메뉴 이름을 입력하세요. 예: 불고기버거",
+            style="CardHint.TLabel",
+        ).pack(anchor="w", pady=(0, 7))
+        target_input = tk.Frame(target_content, background=colors["surface"])
+        target_input.pack(fill="x")
         self.target_query_var = tk.StringVar()
-        self.target_entry = ttk.Entry(
+        entry_shell = tk.Frame(
             target_input,
+            background="#B8C5D8",
+            padx=1,
+            pady=1,
+        )
+        entry_shell.pack(side="left", fill="x", expand=True)
+        self.target_entry = tk.Entry(
+            entry_shell,
             textvariable=self.target_query_var,
-            font=("맑은 고딕", 11),
+            background="#FFFFFF",
+            foreground=colors["text"],
+            insertbackground=colors["accent"],
+            selectbackground=colors["accent_soft"],
+            selectforeground=colors["text"],
+            relief="flat",
+            borderwidth=0,
+            font=(font, 11),
         )
-        self.target_entry.pack(side="left", fill="x", expand=True)
+        self.target_entry.pack(fill="both", expand=True, ipady=10, padx=10)
         self.target_entry.bind("<Return>", self.search_target)
-        ttk.Button(target_input, text="찾기·추적", command=self.search_target).pack(
-            side="left", padx=(5, 0)
+        self.target_entry.bind(
+            "<FocusIn>", lambda event: entry_shell.configure(background=colors["accent"])
         )
+        self.target_entry.bind(
+            "<FocusOut>", lambda event: entry_shell.configure(background="#B8C5D8")
+        )
+        ttk.Button(
+            target_input,
+            text="메뉴 찾기",
+            command=self.search_target,
+            style="Primary.TButton",
+        ).pack(side="left", padx=(7, 0))
 
         self.target_status_var = tk.StringVar(
-            value="메뉴명을 입력하거나 아래 목록에서 목표를 선택하세요."
+            value="메뉴명을 입력하거나 아래 인식 결과에서 목표를 선택하세요."
         )
-        ttk.Label(
-            controls,
+        self.guide_var = tk.StringVar(value="분석 후 메뉴를 선택하세요.")
+        guide_surface = tk.Frame(
+            target_content,
+            background=colors["navy"],
+            padx=14,
+            pady=13,
+        )
+        guide_surface.pack(fill="x", pady=(10, 0))
+        tk.Label(
+            guide_surface,
+            text="현재 안내",
+            font=(font, 8, "bold"),
+            foreground="#8EB5FF",
+            background=colors["navy"],
+            justify="left",
+            anchor="w",
+        ).pack(anchor="w")
+
+        tk.Label(
+            guide_surface,
+            textvariable=self.guide_var,
+            wraplength=350,
+            font=(font, 13, "bold"),
+            foreground="#FFFFFF",
+            background=colors["navy"],
+            justify="left",
+            anchor="w",
+        ).pack(anchor="w", fill="x", pady=(4, 6))
+
+        tk.Label(
+            guide_surface,
             textvariable=self.target_status_var,
-            wraplength=330,
-            font=("맑은 고딕", 10, "bold"),
-            foreground="#173B57",
-        ).pack(anchor="w", fill="x", pady=(0, 5))
+            wraplength=350,
+            font=(font, 9),
+            foreground="#C7D4E7",
+            background=colors["navy"],
+            justify="left",
+            anchor="w",
+        ).pack(anchor="w", fill="x", pady=(0, 9))
 
         self.haptic_panel = tk.Label(
-            controls,
-            text="진동 대기",
-            font=("맑은 고딕", 11, "bold"),
-            foreground="#34495E",
-            background="#E9EEF2",
-            padx=8,
-            pady=7,
+            guide_surface,
+            text="가상 진동 안내 · 대기",
+            font=(font, 9, "bold"),
+            foreground="#D5DFEC",
+            background=colors["navy_soft"],
+            padx=10,
+            pady=8,
+            anchor="w",
         )
-        self.haptic_panel.pack(fill="x", pady=(0, 9))
-
-        ttk.Label(
-            controls,
-            text="4. 인식된 메뉴 — 클릭 또는 방향키·Enter",
-            style="Status.TLabel",
-        ).pack(anchor="w")
-        self.item_list = tk.Listbox(
-            controls,
-            font=("맑은 고딕", 11),
-            height=9,
-            activestyle="dotbox",
-            exportselection=False,
-        )
-        self.item_list.pack(fill="both", expand=True, pady=(6, 8))
-        self.item_list.bind("<<ListboxSelect>>", self.select_item)
-        self.item_list.bind("<Return>", self.select_item)
-
-        self.guide_var = tk.StringVar(value="분석 후 메뉴를 선택하세요.")
-        guide = ttk.Label(
-            controls,
-            textvariable=self.guide_var,
-            wraplength=330,
-            font=("맑은 고딕", 11, "bold"),
-            foreground="#173B57",
-        )
-        guide.pack(anchor="w", fill="x", pady=(0, 10))
+        self.haptic_panel.pack(fill="x")
 
         self.tts_var = tk.BooleanVar(value=True)
-        speech_controls = ttk.Frame(controls)
-        speech_controls.pack(fill="x")
-        ttk.Checkbutton(
+        speech_controls = ttk.Frame(target_content, style="Card.TFrame")
+        speech_controls.pack(fill="x", pady=(7, 0))
+        self.tts_toggle = tk.Checkbutton(
             speech_controls,
-            text="자연 음성 사용 (R을 누를 때만 재생)",
+            text="음성 안내 켜짐",
             variable=self.tts_var,
             command=self._toggle_speech,
-        ).pack(side="left", anchor="w")
+            indicatoron=False,
+            relief="flat",
+            offrelief="flat",
+            borderwidth=0,
+            background="#F1F5F9",
+            activebackground=colors["success_soft"],
+            selectcolor=colors["success_soft"],
+            foreground=colors["text"],
+            activeforeground=colors["success"],
+            font=(font, 9, "bold"),
+            padx=10,
+            pady=7,
+            cursor="hand2",
+        )
+        self.tts_toggle.pack(side="left", anchor="w")
         ttk.Button(
             speech_controls,
             text="안내 듣기 (R)",
             command=self.repeat_current_guidance,
+            style="Secondary.TButton",
         ).pack(side="right")
 
-        note = (
-            "녹색: 높은 신뢰도 · 주황: 확인 필요\n"
-            "노란 상자: 카메라가 찾는 목표\n"
-            "십자선: 카메라 중심점(가상 손가락)\n"
-            "화면 클릭: 클릭 위치 기준 안내 갱신 · R로 듣기\n"
-            "F2 카메라 · F3 사진 · F4 데모 · R 안내 듣기 · Esc 중지"
+        result_card = tk.Frame(
+            controls,
+            background=colors["surface"],
+            highlightthickness=0,
+            bd=0,
         )
-        ttk.Label(controls, text=note, foreground="#566573").pack(
-            anchor="w", pady=(10, 0)
+        result_card.pack(fill="both", expand=True)
+        result_header = ttk.Frame(
+            result_card, style="Card.TFrame", padding=(14, 12, 14, 7)
         )
+        result_header.pack(fill="x")
+        tk.Label(
+            result_header,
+            text="03",
+            background=colors["accent_soft"],
+            foreground=colors["accent_dark"],
+            font=(font, 8, "bold"),
+            padx=8,
+            pady=3,
+        ).pack(side="left", padx=(0, 9))
+        ttk.Label(
+            result_header, text="인식 결과", style="CardTitle.TLabel"
+        ).pack(side="left")
+        self.result_count_var = tk.StringVar(value="분석 대기")
+        tk.Label(
+            result_header,
+            textvariable=self.result_count_var,
+            background=colors["accent_soft"],
+            foreground=colors["accent_dark"],
+            font=(font, 8, "bold"),
+            padx=8,
+            pady=3,
+        ).pack(side="right")
+        result_content = ttk.Frame(
+            result_card, style="Card.TFrame", padding=(14, 0, 14, 14)
+        )
+        result_content.pack(fill="both", expand=True)
+        ttk.Label(
+            result_content,
+            text="결과 행을 클릭하거나 방향키와 Enter로 목표를 선택할 수 있습니다.",
+            style="CardHint.TLabel",
+            wraplength=395,
+        ).pack(anchor="w", pady=(0, 7))
+        list_frame = tk.Frame(
+            result_content,
+            background="#FFFFFF",
+            highlightthickness=0,
+            bd=0,
+        )
+        list_frame.pack(fill="both", expand=True)
+        self.item_list = ttk.Treeview(
+            list_frame,
+            columns=("menu", "position", "confidence"),
+            show="headings",
+            selectmode="browse",
+            height=6,
+            style="Result.Treeview",
+            takefocus=True,
+        )
+        self.item_list.heading("menu", text="메뉴")
+        self.item_list.heading("position", text="격자 위치")
+        self.item_list.heading("confidence", text="OCR 상태")
+        self.item_list.column("menu", width=150, minwidth=105, stretch=True)
+        self.item_list.column(
+            "position", width=105, minwidth=90, stretch=False, anchor="w"
+        )
+        self.item_list.column(
+            "confidence", width=92, minwidth=80, stretch=False, anchor="center"
+        )
+        self.item_list.tag_configure("reliable", foreground=colors["text"])
+        self.item_list.tag_configure("review", foreground=colors["warning"])
+        self.item_list.tag_configure("low", foreground=colors["danger"])
+        item_scrollbar = ttk.Scrollbar(
+            list_frame,
+            orient="vertical",
+            command=self.item_list.yview,
+            style="Modern.Vertical.TScrollbar",
+        )
+        self.item_list.configure(yscrollcommand=item_scrollbar.set)
+        item_scrollbar.pack(side="right", fill="y")
+        self.item_list.pack(side="left", fill="both", expand=True)
+        self.result_empty_label = tk.Label(
+            list_frame,
+            text="화면을 분석하면 인식된 메뉴가\n여기에 정리됩니다.",
+            background="#FFFFFF",
+            foreground="#94A3B8",
+            font=(font, 10),
+            justify="center",
+        )
+        self.result_empty_label.place(relx=0.5, rely=0.58, anchor="center")
+        self.item_list.bind("<<TreeviewSelect>>", self.select_item)
+        self.item_list.bind("<Return>", self.select_item)
+
+        def scroll_control_panel(event):
+            if event.widget is self.item_list:
+                return None
+            pointer_x = self.root.winfo_pointerx()
+            panel_left = controls_canvas.winfo_rootx()
+            panel_right = panel_left + controls_canvas.winfo_width()
+            if not (panel_left <= pointer_x <= panel_right):
+                return None
+            if controls.winfo_reqheight() <= controls_canvas.winfo_height():
+                return None
+            direction = -3 if event.delta > 0 else 3
+            controls_canvas.yview_scroll(direction, "units")
+            return "break"
+
+        def is_control_widget(widget) -> bool:
+            current = widget
+            while current is not None:
+                if current is controls:
+                    return True
+                current = getattr(current, "master", None)
+            return False
+
+        def reveal_focused_control(widget) -> None:
+            if not widget.winfo_exists() or not is_control_widget(widget):
+                return
+            controls_canvas.update_idletasks()
+            viewport_top = controls_canvas.canvasy(0)
+            viewport_height = controls_canvas.winfo_height()
+            widget_top = widget.winfo_rooty() - controls.winfo_rooty()
+            widget_bottom = widget_top + widget.winfo_height()
+            content_height = max(controls.winfo_reqheight(), 1)
+            if widget_top < viewport_top:
+                controls_canvas.yview_moveto(max(0.0, widget_top / content_height))
+            elif widget_bottom > viewport_top + viewport_height:
+                target_top = widget_bottom - viewport_height
+                controls_canvas.yview_moveto(
+                    min(1.0, max(0.0, target_top / content_height))
+                )
+
+        def keep_keyboard_focus_visible(event):
+            if is_control_widget(event.widget):
+                self.root.after_idle(reveal_focused_control, event.widget)
+
+        self.root.bind_all("<MouseWheel>", scroll_control_panel, add="+")
+        self.root.bind_all("<FocusIn>", keep_keyboard_focus_visible, add="+")
+        ttk.Label(
+            result_content,
+            text="신뢰도가 낮은 항목은 결과 표에서 직접 확인한 뒤 선택하세요.",
+            style="CardHint.TLabel",
+            wraplength=395,
+        ).pack(anchor="w", pady=(7, 0))
+
+        footer = tk.Frame(
+            self.root,
+            background=colors["background"],
+            padx=20,
+            pady=8,
+        )
+        footer.pack(fill="x")
+        tk.Label(
+            footer,
+            text="단축키",
+            background=colors["background"],
+            foreground=colors["text"],
+            font=(font, 9, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            footer,
+            text="F2 카메라  ·  F3 사진  ·  F4 데모  ·  F5 분석  ·  R 안내  ·  Esc 중지",
+            background=colors["background"],
+            foreground=colors["muted"],
+            font=(font, 9),
+        ).pack(side="left", padx=(8, 0))
+        tk.Label(
+            footer,
+            text="가상 진동 시뮬레이션",
+            background=colors["warning_soft"],
+            foreground=colors["warning"],
+            font=(font, 9, "bold"),
+            padx=10,
+            pady=4,
+        ).pack(side="right")
 
         self.root.bind("<F2>", lambda event: self.toggle_camera())
         self.root.bind("<F3>", lambda event: self.open_image())
@@ -401,7 +1093,12 @@ class PrototypeApp:
         )
 
     def _toggle_speech(self) -> None:
-        self.speaker.set_enabled(self.tts_var.get())
+        enabled = self.tts_var.get()
+        self.speaker.set_enabled(enabled)
+        if hasattr(self, "tts_toggle"):
+            self.tts_toggle.configure(
+                text="음성 안내 켜짐" if enabled else "음성 안내 꺼짐"
+            )
 
     def _global_keypress(self, event) -> str | None:
         if self.root.focus_get() is self.target_entry:
@@ -569,7 +1266,8 @@ class PrototypeApp:
         self.use_full_frame_tracking = False
         self.live_source_annotated = None
         self.live_corrected_annotated = None
-        self.item_list.delete(0, tk.END)
+        self._clear_result_list()
+        self.result_count_var.set("분석 준비")
         self.target_query_var.set("")
         self._reset_tracking_feedback()
         self._set_connection_status(
@@ -577,7 +1275,7 @@ class PrototypeApp:
         )
         self.camera_status_var.set("내장 데모 사용 · 카메라 미사용")
         self.status_var.set("내장 모의 키오스크를 분석합니다.")
-        self.analyze_current()
+        self.analyze_current(auto=True)
 
     def open_image(self) -> None:
         path = filedialog.askopenfilename(
@@ -613,7 +1311,8 @@ class PrototypeApp:
         self.live_source_annotated = None
         self.live_corrected_annotated = None
         self._reset_tracking_feedback()
-        self.item_list.delete(0, tk.END)
+        self._clear_result_list()
+        self.result_count_var.set("분석 대기")
         self._set_connection_status(
             self._idle_connection_message(), "idle"
         )
@@ -637,7 +1336,8 @@ class PrototypeApp:
         self.live_source_annotated = None
         self.live_corrected_annotated = None
         self.use_full_frame_tracking = False
-        self.item_list.delete(0, tk.END)
+        self._clear_result_list()
+        self.result_count_var.set("연결 대기")
         self._reset_tracking_feedback()
         self.screen_tracker.reset()
         self.stability.reset()
@@ -645,7 +1345,7 @@ class PrototypeApp:
         self._clear_frame_candidates()
         self.camera_generation += 1
         generation = self.camera_generation
-        self.camera_button.configure(text="탐색 취소")
+        self.camera_button.configure(text="연결 취소")
         self.camera_selector.configure(state="disabled")
         camo_available = any(device.is_camo for device in self.camera_devices)
         if automatic_selection and camo_available:
@@ -725,7 +1425,8 @@ class PrototypeApp:
             return
         self.camera_selector.configure(state="readonly")
         if open_result.session is None:
-            self.camera_button.configure(text="웹캠 시작")
+            self.camera_button.configure(text="카메라 연결")
+            self.result_count_var.set("연결 실패")
             self._set_connection_status("카메라 연결 실패", "error")
             self.camera_status_var.set(error_message)
             self._speak_throttled("카메라를 열지 못했습니다. 다른 앱과 개인정보 설정을 확인하세요.", force=True)
@@ -752,7 +1453,7 @@ class PrototypeApp:
         self.stability.reset()
         self.screen_tracker.reset()
         self.screen_miss_count = 0
-        self.camera_button.configure(text="웹캠 중지")
+        self.camera_button.configure(text="카메라 중지")
         self.view_mode.set("source")
         if (
             session.initial_frame is not None
@@ -795,7 +1496,7 @@ class PrototypeApp:
         self.screen_tracker.reset()
         self.screen_miss_count = 0
         if hasattr(self, "camera_button"):
-            self.camera_button.configure(text="웹캠 시작")
+            self.camera_button.configure(text="카메라 연결")
         if hasattr(self, "camera_selector"):
             self.camera_selector.configure(state="readonly")
         if announce and was_active:
@@ -805,9 +1506,9 @@ class PrototypeApp:
                 else "카메라 연결 해제"
             )
             self._set_connection_status(disconnected, "idle")
-            self.camera_status_var.set("웹캠을 중지했습니다.")
+            self.camera_status_var.set("카메라를 중지했습니다.")
             self._reset_tracking_feedback()
-            self._speak_throttled("웹캠을 중지했습니다.", force=True)
+            self._speak_throttled("카메라를 중지했습니다.", force=True)
         elif was_active and hasattr(self, "connection_status_var"):
             self._set_connection_status(
                 self._idle_connection_message(), "idle"
@@ -924,7 +1625,8 @@ class PrototypeApp:
                 self._clear_frame_candidates()
                 self.camera_status_var.set(
                     f"{self.camera_description} · 화면을 오래 찾지 못했습니다. "
-                    "네 모서리가 보이도록 다시 비추거나 '전체 프레임 OCR'을 누르세요."
+                    "네 모서리가 보이도록 다시 비추거나 "
+                    "'전체 화면으로 다시 분석'을 누르세요."
                 )
             else:
                 self._maybe_start_camera_analysis(
@@ -1164,6 +1866,9 @@ class PrototypeApp:
         self.analysis_in_progress = True
         self.analyze_button.configure(state="disabled")
         self.full_frame_button.configure(state="disabled")
+        self.analysis_progress.configure(mode="indeterminate")
+        self.analysis_progress.start(12)
+        self.result_count_var.set("분석 중")
         mode = "전체 프레임" if request["force_full_frame"] else "검출 화면"
         self.status_var.set(f"{mode} 보정 및 OCR 분석 중… 카메라는 계속 작동합니다.")
         future = self.analysis_executor.submit(
@@ -1205,6 +1910,8 @@ class PrototypeApp:
         self.analysis_in_progress = False
         self.analyze_button.configure(state="normal")
         self.full_frame_button.configure(state="normal")
+        self.analysis_progress.stop()
+        self.analysis_progress.configure(mode="determinate", value=0)
         is_current = (
             request["input_generation"] == self.input_generation
             and request["request_id"] == self.analysis_request_id
@@ -1215,7 +1922,8 @@ class PrototypeApp:
         except Exception as error:
             if is_current:
                 hint = (
-                    " 화면 테두리가 보이지 않으면 '전체 프레임 OCR'을 사용하세요."
+                    " 화면 테두리가 보이지 않으면 "
+                    "'전체 화면으로 다시 분석'을 사용하세요."
                     if "모서리" in str(error)
                     else ""
                 )
@@ -1231,6 +1939,40 @@ class PrototypeApp:
             self.pending_analysis = None
             self._start_analysis(pending)
 
+    def _release_result_selection_guard(self) -> None:
+        self._result_selection_guard = False
+
+    def _clear_result_list(self) -> None:
+        if not hasattr(self, "item_list"):
+            return
+        self._result_selection_guard = True
+        rows = self.item_list.get_children()
+        if rows:
+            self.item_list.delete(*rows)
+        if hasattr(self, "result_empty_label"):
+            self.result_empty_label.place(relx=0.5, rely=0.58, anchor="center")
+            self.result_empty_label.lift()
+        self.root.after_idle(self._release_result_selection_guard)
+
+    def _set_result_selection(self, index: int) -> None:
+        row_id = str(index)
+        if not self.item_list.exists(row_id):
+            return
+        self._result_selection_guard = True
+        self.item_list.selection_set(row_id)
+        self.item_list.focus(row_id)
+        self.item_list.see(row_id)
+        self.root.after_idle(self._release_result_selection_guard)
+
+    def _selected_result_index(self) -> int | None:
+        selected = self.item_list.selection()
+        if not selected:
+            return None
+        try:
+            return int(selected[0])
+        except (TypeError, ValueError):
+            return None
+
     def _apply_analysis_result(self, result, fallback_note: str, request) -> None:
         previous = request["previous"]
         old_signature = request["old_signature"]
@@ -1241,19 +1983,32 @@ class PrototypeApp:
         self.use_full_frame_tracking = (
             request["force_full_frame"] and self.capture is not None
         )
-        self.item_list.delete(0, tk.END)
-        for item in result.items:
+        self._clear_result_list()
+        for index, item in enumerate(result.items):
             confidence_label = self._confidence_label(item.confidence)
             self.item_list.insert(
-                tk.END,
-                (
-                    f"{item.text}  |  {item.grid} {item.relative} · "
-                    f"{confidence_label} {item.confidence:.0f}%"
-                ).strip(),
+                "",
+                "end",
+                iid=str(index),
+                values=(
+                    item.text,
+                    f"{item.grid} {item.relative}".strip(),
+                    f"{confidence_label}  {item.confidence:.0f}%",
+                ),
+                tags=(
+                    "reliable"
+                    if item.confidence >= 70
+                    else "review"
+                    if item.confidence >= 50
+                    else "low",
+                ),
             )
+        if result.items:
+            self.result_empty_label.place_forget()
         mode = "전체 프레임" if request["force_full_frame"] else "화면 검출"
         reliable_count = sum(item.confidence >= 70 for item in result.items)
         review_count = len(result.items) - reliable_count
+        self.result_count_var.set(f"{len(result.items)}개")
         status = (
             f"{mode} · 확실 {reliable_count}개"
             + (f" · 확인 필요 {review_count}개" if review_count else "")
@@ -1305,7 +2060,7 @@ class PrototypeApp:
                     self._highlight_candidate(index)
                     self.target_status_var.set(
                         f"후보: '{candidate.text}' · 검색 유사도 {score:.0%} · "
-                        f"OCR {candidate.confidence:.0f}%. 목록에서 클릭해 확인하세요."
+                        f"OCR {candidate.confidence:.0f}%. 결과 행을 클릭해 확인하세요."
                     )
             else:
                 match_index = None
@@ -1334,12 +2089,12 @@ class PrototypeApp:
             self._reset_tracking_feedback(keep_target=True)
             if not query and previous is None:
                 self.target_status_var.set(
-                    "메뉴명을 입력하거나 아래 목록에서 목표를 선택하세요."
+                    "메뉴명을 입력하거나 아래 인식 결과에서 목표를 선택하세요."
                 )
             self.guide_var.set(
                 "인식된 메뉴가 없습니다."
                 if not result.items
-                else "찾을 메뉴를 입력하거나 목록에서 목표를 선택하세요."
+                else "찾을 메뉴를 입력하거나 결과 표에서 목표를 선택하세요."
             )
             self._render_current()
 
@@ -1380,10 +2135,7 @@ class PrototypeApp:
         if not self.result or not (0 <= index < len(self.result.items)):
             return
         self.pending_candidate_index = index
-        self.item_list.selection_clear(0, tk.END)
-        self.item_list.selection_set(index)
-        self.item_list.activate(index)
-        self.item_list.see(index)
+        self._set_result_selection(index)
 
     def _handle_search_match(
         self,
@@ -1407,14 +2159,16 @@ class PrototypeApp:
         message = (
             f"검색어 '{query}'의 후보는 '{candidate.text}'입니다. "
             f"유사도 {score:.0%}, OCR 신뢰도 {candidate.confidence:.0f}퍼센트입니다. "
-            "목록에서 클릭하거나 엔터를 눌러 확인하세요."
+            "결과 행을 클릭하거나 엔터를 눌러 확인하세요."
         )
         self.target_status_var.set(message)
-        self.guide_var.set("후보 확인 전에는 목표 추적과 진동을 시작하지 않습니다.")
+        self.guide_var.set(
+            "후보를 확인하면 목표 추적과 가상 진동 안내가 시작됩니다."
+        )
         self._render_current()
         if speak:
             self._speak_throttled(
-                f"후보는 {candidate.text}입니다. 목록에서 확인하세요.",
+                f"후보는 {candidate.text}입니다. 결과 표에서 확인하세요.",
                 force=True,
             )
 
@@ -1452,12 +2206,12 @@ class PrototypeApp:
         )
 
     def select_item(self, event=None) -> None:
-        if not self.result or not self.result.items:
+        if self._result_selection_guard or not self.result or not self.result.items:
             return
-        selection = self.item_list.curselection()
-        if not selection:
+        index = self._selected_result_index()
+        if index is None:
             return
-        self._activate_item(selection[0], speak=True)
+        self._activate_item(index, speak=True)
 
     def _activate_item(
         self,
@@ -1468,10 +2222,7 @@ class PrototypeApp:
         if not self.result or not (0 <= index < len(self.result.items)):
             return
         preserved_pointer = self.manual_pointer if preserve_pointer else None
-        self.item_list.selection_clear(0, tk.END)
-        self.item_list.selection_set(index)
-        self.item_list.activate(index)
-        self.item_list.see(index)
+        self._set_result_selection(index)
         self.selected_item = self.result.items[index]
         self.pending_candidate_index = None
         self.manual_pointer = preserved_pointer
@@ -1489,10 +2240,12 @@ class PrototypeApp:
             voice_message = self.location_voice_message
         else:
             display_message = (
-                f"{self.selected_item.text}, 화면 {position}에 있습니다. "
+                f"{self.selected_item.text}, 화면 {position}에 있습니다."
+            )
+            detail_message = (
                 f"촉각 격자 {self.selected_item.grid}{relative} · "
-                f"좌표 ({grid_x}, {grid_y}), "
-                f"OCR 신뢰도 {self.selected_item.confidence:.0f}퍼센트입니다."
+                f"좌표 ({grid_x}, {grid_y}) · "
+                f"OCR 신뢰도 {self.selected_item.confidence:.0f}%"
             )
             voice_message = (
                 f"{self.selected_item.text}, 화면 {position}에 있습니다."
@@ -1501,12 +2254,12 @@ class PrototypeApp:
             self.guide_var.set(display_message)
             if self.capture is not None:
                 self.target_status_var.set(
-                    f"{self.selected_item.text} 목표 확정 · "
+                    f"{detail_message} · "
                     "화면을 클릭하면 그 위치를 기준으로 다시 안내합니다."
                 )
             else:
                 self.target_status_var.set(
-                    f"{self.selected_item.text} 목표 확정 · "
+                    f"{detail_message} · "
                     "보정 화면에서 위치를 확인하세요."
                 )
         self._render_current()
@@ -1664,9 +2417,12 @@ class PrototypeApp:
             (px, py), self.selected_item, (image_w, image_h)
         )
         if inside:
-            detail = "목표 안쪽 · 강한 연속 진동"
+            detail = "목표 안쪽 · 가상 연속 진동 표시"
         else:
-            detail = f"목표 거리 {normalized:.1%} · 진동 간격 약 {interval} ms"
+            detail = (
+                f"목표 거리 {normalized:.1%} · "
+                f"가상 진동 간격 약 {interval} ms"
+            )
         self._set_haptic_feedback(
             active=True,
             interval=interval,
@@ -1698,11 +2454,11 @@ class PrototypeApp:
             self.analyzer.output_size,
         )
         detail = (
-            "클릭 위치가 목표 안쪽 · 강한 연속 진동"
+            "클릭 위치가 목표 안쪽 · 가상 연속 진동 표시"
             if inside
             else (
                 f"클릭 위치 기준 거리 {normalized:.1%} · "
-                f"진동 간격 약 {interval} ms"
+                f"가상 진동 간격 약 {interval} ms"
             )
         )
         self._set_haptic_feedback(
@@ -1773,38 +2529,54 @@ class PrototypeApp:
         self.haptic_active = False
         self.haptic_inside = False
         self.haptic_interval = 1000
-        self.haptic_detail = "목표를 선택하면 진동이 시작됩니다."
+        self.haptic_detail = "목표를 선택하면 가상 진동 안내가 시작됩니다."
         if hasattr(self, "haptic_var"):
             self.haptic_var.set(self.haptic_detail)
         if not keep_target and hasattr(self, "target_status_var"):
             self.manual_pointer = None
             self.location_voice_message = ""
             self.target_status_var.set(
-                "메뉴명을 입력하거나 아래 목록에서 목표를 선택하세요."
+                "메뉴명을 입력하거나 아래 인식 결과에서 목표를 선택하세요."
             )
 
     def _haptic_tick(self) -> None:
         if self.closed or not self.haptic_panel.winfo_exists():
             return
+        colors = self.ui_colors
         if not self.haptic_active:
             self.haptic_panel.configure(
-                text="진동 대기", background="#E9EEF2", foreground="#34495E"
+                text="가상 진동 안내 · 대기",
+                background=colors["navy_soft"],
+                foreground="#D5DFEC",
             )
         elif self.haptic_inside:
             self.haptic_panel.configure(
-                text="목표 일치 — 강한 연속 진동",
-                background="#38B66B",
+                text="목표 도달 · 가상 연속 진동 표시",
+                background=colors["success"],
                 foreground="#FFFFFF",
             )
         else:
-            phase = int(time.monotonic() * 1000) % self.haptic_interval
-            pulse_on = phase < min(140, self.haptic_interval // 2)
+            if self.haptic_interval <= 180:
+                stage = "매우 가까움"
+                background = colors["warning_soft"]
+                foreground = colors["warning"]
+            elif self.haptic_interval <= 420:
+                stage = "접근 중"
+                background = colors["accent_soft"]
+                foreground = colors["accent_dark"]
+            else:
+                stage = "목표까지 이동 중"
+                background = colors["navy_soft"]
+                foreground = "#D5DFEC"
             self.haptic_panel.configure(
-                text=f"가상 진동 · {self.haptic_interval} ms 간격",
-                background="#F2B544" if pulse_on else "#FFF2CB",
-                foreground="#17202A",
+                text=(
+                    f"가상 진동 시뮬레이션 · {stage} · "
+                    f"약 {self.haptic_interval} ms"
+                ),
+                background=background,
+                foreground=foreground,
             )
-        self.root.after(70, self._haptic_tick)
+        self.root.after(120, self._haptic_tick)
 
     def close(self) -> None:
         self.closed = True
